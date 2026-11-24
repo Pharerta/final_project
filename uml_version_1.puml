@@ -1,0 +1,100 @@
+@startuml
+!pragma layout smetana
+skinparam classAttributeIconSize 0
+
+enum Mood {
+  ENERGETIC
+  CALM
+  HAPPY
+  SAD
+  FOCUSED
+  + {static} parse(value: str | Mood): Mood
+}
+
+abstract class MediaItem {
+  # _title: str
+  + title: str {readOnly}
+  + {abstract} get_details(): str
+}
+
+class AudioTrack {
+  # _artist: str
+  # _duration_sec: int
+  + genre: str
+  + album_id: int
+  + artist: str {readOnly}
+  + duration_sec: int {readOnly}
+  + get_details(): str
+}
+
+class LibraryTrack {
+  + genre: str
+  + mood: Mood
+  + last_played: date
+  # _rating: int
+  + rating: int
+  + get_details(): str
+}
+
+class Playlist {
+  + name: str
+  - _tracks: List[MediaItem]
+  + tracks: Tuple[MediaItem] {readOnly}
+  + total_duration: int {readOnly}
+  + add_track(track: MediaItem)
+  + render(): str
+  + show_playlist()
+  + __str__(): str
+}
+
+class Artist {
+  # _name: str
+  # _deezer_id: int
+  - _banned: bool
+  - _related: List[Artist]
+  + name: str {readOnly}
+  + deezer_id: int {readOnly}
+  + banned: bool
+  + related: Tuple[Artist] {readOnly}
+  + add_related(other: Artist)
+}
+
+class PlaylistGenerator {
+  + RECENCY_CAP_DAYS: int
+  - _library: List[LibraryTrack]
+  - _discoveries: List[AudioTrack]
+  - _banned: Set[str]
+  + generate(duration_min: int, mood: Mood, new_percent: int, today: date, name: str): Playlist
+  - _weight(track: LibraryTrack, today: date): float
+  - {static} _fill(candidates, budget_sec: int): List[AudioTrack]
+  - {static} _avoid_repeats(tracks): List[AudioTrack]
+}
+
+class DeezerAPIClient <<service>> {
+  + {static} BASE_URL: str
+  + {static} search_tracks(query: str, limit: int): List[AudioTrack]
+  + {static} search_artist(name: str): Artist
+  + {static} top_tracks(artist: Artist, limit: int): List[AudioTrack]
+  + {static} related_artists(artist: Artist, limit: int): List[Artist]
+  + {static} get_album_genre(album_id: int): str
+  + {static} resolve_track(title: str, artist: str, seconds: int): AudioTrack
+}
+
+MediaItem <|-- AudioTrack
+AudioTrack <|-- LibraryTrack
+Playlist o-- "0..*" MediaItem : _tracks >
+LibraryTrack --> Mood : mood
+Artist o-- "0..*" Artist : _related >
+PlaylistGenerator o-- "0..*" LibraryTrack : library
+PlaylistGenerator o-- "0..*" AudioTrack : discoveries
+PlaylistGenerator ..> Playlist : creates
+PlaylistGenerator ..> Mood : filters by
+DeezerAPIClient ..> AudioTrack : creates
+DeezerAPIClient ..> Artist : creates
+
+note right of MediaItem : Абстрактний базовий клас
+note right of LibraryTrack : Рівень наслідування 2.\nІнкапсуляція оцінки (1-5):\nsetter кидає ValueError.
+note right of Playlist : Агрегація для демонстрації\nполіморфізму.\nrender() не друкує: модель без I/O.
+note right of PlaylistGenerator : Прототип; логіка відбору\nпереїде в core/ (Етап 3).
+note right of Artist : Вершина графа схожості\n(зв'язки спрямовані).
+@enduml

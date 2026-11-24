@@ -1,0 +1,260 @@
+@startuml
+!pragma layout smetana
+top to bottom direction
+
+title Архітектура «Куратор плейлистів» (v3 — ООП + Функціональне ядро + Prolog + SQLite E7)
+
+' --- Загальне оформлення ---
+skinparam shadowing false
+skinparam roundcorner 8
+skinparam classAttributeIconSize 0
+skinparam packageStyle rectangle
+skinparam defaultFontName "Segoe UI"
+skinparam defaultFontSize 12
+skinparam nodesep 28
+skinparam ranksep 38
+skinparam padding 4
+
+skinparam ArrowColor #475569
+skinparam ArrowFontColor #334155
+skinparam ArrowFontSize 11
+skinparam ClassBackgroundColor #FFFFFF
+skinparam ClassBorderColor #64748B
+skinparam ClassHeaderBackgroundColor #F8FAFC
+skinparam NoteBackgroundColor #FEFCE8
+skinparam NoteBorderColor #CA8A04
+
+' ============================================================================
+' РІВЕНЬ 1: Інтерфейс користувача, оркестрація та зовнішній API
+' ============================================================================
+package "Application & Orchestration" as app_pkg #EFF6FF;line:3B82F6 {
+  class Session <<REPL>> {
+    + storage: SQLiteStorage
+    + library: List[LibraryTrack]
+    + discoveries: List[AudioTrack]
+    + banned: Dict[str, str]
+    + similarity_graph: Dict[str, List[str]]
+    --
+    + execute(line: str): str
+  }
+
+  class PlaylistGenerator <<facade>> {
+    + last_prolog_plan: Optional[PrologPlaylistPlan]
+    --
+    + generate(duration_min, mood, new_percent, today, name): Playlist
+  }
+
+  Session -right-> PlaylistGenerator : delegates
+}
+
+package "src.services (Зовнішній API)" as services_pkg #F0F9FF;line:0284C7 {
+  class DeezerAPIClient <<service>> {
+    + {static} search_tracks(query, limit): List[AudioTrack]
+    + {static} search_artist(name): Artist
+    + {static} top_tracks(artist, limit): List[AudioTrack]
+    + {static} related_artists(artist, limit): List[Artist]
+    + {static} resolve_track(title, artist, seconds): AudioTrack
+  }
+}
+
+Session -left-> DeezerAPIClient : queries
+
+' ============================================================================
+' РІВЕНЬ 2: Три парадигми (ООП Модель | Функціональне ядро | Prolog)
+' ============================================================================
+package "src.models (ООП Модель)" as models_pkg #FFFBEB;line:D97706 {
+  class Artist {
+    + name: str
+    + banned: bool
+    + related: Tuple[Artist, ...]
+    + add_related(other)
+  }
+
+  class Playlist {
+    + name: str
+    + total_duration: int
+    + add_track(track)
+    + set_explanation(artist, reason)
+    + render(): str
+  }
+
+  abstract class MediaItem {
+    # _title: str
+    + {abstract} get_details(): str
+  }
+
+  class AudioTrack {
+    + artist: str
+    + duration_sec: int
+    + genre: str
+    + to_data(): TrackData
+  }
+
+  class LibraryTrack {
+    + mood: Mood
+    + rating: int
+    + last_played: date
+    + to_data(): LibraryTrackData
+  }
+
+  enum Mood {
+    ENERGETIC
+    CALM
+    HAPPY
+    SAD
+    FOCUSED
+    --
+    + {static} parse(value): Mood
+  }
+
+  Artist -[hidden]right- Playlist
+  MediaItem <|-- AudioTrack
+  AudioTrack <|-- LibraryTrack
+  LibraryTrack -right-> Mood : mood
+  Playlist o-- "0..*" MediaItem : _tracks
+  Artist o-- "0..*" Artist : _related
+}
+
+package "src.core (Функціональне ядро)" as core_pkg #ECFDF5;line:059669 {
+  class "core.playlist" as core_pl <<module>> {
+    + fill_budget
+    + avoid_adjacent_repeats
+    + generate_playlist_data
+  }
+
+  class "core.functional" as core_func <<module>> {
+    + compose / pipe
+    + combine_predicates
+    + make_weight_scorer
+  }
+
+  class "core.graph" as core_graph <<module>> {
+    + find_recommendation_chain_recursive
+    + explain_recommendation_chain
+  }
+
+  class "core.formatting" as core_fmt <<module>> {
+    + format_track_details
+    + render_playlist_lines
+  }
+
+  class PlaylistData << (D, #A9DCDF) frozen >>
+  class TrackData << (D, #A9DCDF) frozen >>
+  class LibraryTrackData << (D, #A9DCDF) frozen >>
+  class ArtistNode << (D, #A9DCDF) frozen >>
+
+  core_pl ..> core_func : uses
+  core_pl ..> PlaylistData : creates
+  PlaylistData o-- "0..*" TrackData : tracks
+  TrackData <|-- LibraryTrackData
+
+  core_func -[hidden]down- core_graph
+  core_graph -[hidden]down- core_fmt
+  LibraryTrackData -[hidden]down- ArtistNode
+}
+
+package "src.logic (Третя парадигма: Prolog)" as logic_pkg #F5F3FF;line:7C3AED {
+  class PrologEngine <<bridge: pyswip>> {
+    + rules_path: Path
+    --
+    + find_recommendations(favorites, graph, banned, max_steps): Dict
+    + arrange_tracks(tracks, banned, favorites): Tuple
+    + evaluate_playlist(...): PrologPlaylistPlan
+  }
+
+  class PrologPlaylistPlan << (D, #A9DCDF) frozen >> {
+    + ordered_indices: Tuple[int, ...]
+    + is_sequence_valid: bool
+    + discovery_paths: Mapping
+    + explanations: Mapping
+    + facts_count: int
+  }
+
+  artifact "playlist_rules.pl" as rules_pl {
+  }
+
+  note bottom of rules_pl
+    Факти: favorite_artist/1, similar/2,
+    banned/1, track_info/4.
+    Правила: recommend_discovery/3,
+    arrange_playlist/2, valid_track_sequence/1.
+  end note
+
+  PrologEngine ..> PrologPlaylistPlan : builds
+  PrologEngine ..> rules_pl : consults / queries
+}
+
+' ============================================================================
+' РІВЕНЬ 3: Персистентність (SQLite E7)
+' ============================================================================
+package "src.storage (SQLite E7)" as storage_pkg #F8FAFC;line:475569 {
+  class SQLiteStorage {
+    + db_path: str
+    -- Виконавці та граф --
+    + init_schema() / upsert_artist(...) / set_artist_banned(...)
+    + add_similarity(...) / load_similarity_graph()
+    -- Колекція та відкриття --
+    + add_library_track(...) / add_discovery_tracks(...)
+    + update_library_track_rating(...) / remove_library_track(...)
+    + load_library() / load_discoveries()
+    -- Рекомендації та плейлисти --
+    + save_recommendations(...) / load_recommendations()
+    + save_playlist(...) / list_playlists() / load_playlist(...)
+    + clear_all() / get_stats()
+  }
+
+  class SavedTrackRecord << (D, #A9DCDF) frozen >> {
+    + id: int
+    + track: LibraryTrack
+  }
+
+  class SavedRecommendation << (D, #A9DCDF) frozen >> {
+    + id: int
+    + seed_artist / recommended_artist: str
+    + path_text / reason: str
+    + steps: int
+    + created_at: str
+  }
+
+  class SavedPlaylistSummary << (D, #A9DCDF) frozen >> {
+    + id: int
+    + name / mood / created_at: str
+    + target_minutes / new_percent: int
+    + total_duration_sec / track_count: int
+  }
+
+  SQLiteStorage ..> SavedTrackRecord : returns
+  SQLiteStorage ..> SavedRecommendation : returns
+  SQLiteStorage ..> SavedPlaylistSummary : returns
+  SavedTrackRecord -[hidden]right- SavedRecommendation
+  SavedRecommendation -[hidden]right- SavedPlaylistSummary
+
+  note right of SQLiteStorage
+    Усі SQL-запити параметризовані (?).
+    Таблиці: artists, artist_similarity, tracks,
+    recommendations, playlists, playlist_tracks.
+  end note
+}
+
+' ============================================================================
+' ЗВ'ЯЗКИ МІЖ ШАРАМИ
+' ============================================================================
+' Рівень 1 -> Рівень 2
+DeezerAPIClient ..> Artist : creates
+DeezerAPIClient ..> AudioTrack : creates
+PlaylistGenerator ..> Playlist : creates
+PlaylistGenerator --> core_pl : weights & budget
+PlaylistGenerator --> PrologEngine : graph & adjacency
+
+' Рівень 2 -> Рівень 2
+models_pkg -right..> core_pkg : delegates pure logic
+
+' Рівень 1/2 -> Рівень 3 (Збереження)
+Session --> SQLiteStorage : persists via
+SQLiteStorage -up..> models_pkg : loads / saves
+
+' Напрямні для 3-рівневої сітки
+LibraryTrack -[hidden]down- SQLiteStorage
+ArtistNode -[hidden]down- SavedTrackRecord
+
+@enduml
